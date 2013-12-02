@@ -47,7 +47,6 @@ class GenerationEvent(ModelEvent):
 class ProcessingEvent(ModelEvent):
     def __init__(self, time):
         super(ProcessingEvent, self).__init__(time)
-        print("PROCESSING EVENT CREATED and planed to %f", time)
 
     def __repr__(self):
         return "Process at %f" % self.get_planned_time()
@@ -74,7 +73,7 @@ class Processor(object):
         return ProcessingEvent(self.generate_time() + model_time)
 
 class Model(object):
-    eps = 0.001
+    eps = 0.0005
 
     def __init__(self, gen_expected_value, process_expected_value, process_halfrange, queue_capacity, with_return=False):
         self._generator = Generator(gen_expected_value)
@@ -83,35 +82,34 @@ class Model(object):
         self._events_list = []
         self._model_time = 0
         self._with_return = with_return
+        self._processing = False
 
     def reinit(self):
         self._queue.clear()
         self._events_list = []
         self._model_time = 0
+        self._processing = False
 
     def handle_generation(self):
         self._events_list.insert(0, self._generator.generate_event(self._model_time))
         if self._queue.is_full():
-            #print("AT %f rejected, queue size = %d" % (self._model_time, self._queue._count))
-            self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
             return False
-        else:
+        if self._processing:
             self._queue.enqueue()
-            #print("AT %f generated" % self._model_time)
-        self._events_list.insert(0, self._processor.generate_event(self._model_time))
-        self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
-        #print(self._events_list)
+        else:
+            self._events_list.insert(0, self._processor.generate_event(self._model_time))
+            self._processing = True
         return True
 
     def handle_processing(self):
-        #print("AT %f processed" % self._model_time)
-        if self._with_return:
+        if self._queue.is_empty() and self._with_return:
             self._events_list.insert(0, self._processor.generate_event(self._model_time))
-            self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
-        else:
-            self._queue.dequeue()
-            return True
-
+        elif self._queue.is_empty() and not self._with_return:
+            self._processing = False
+        elif not self._queue.is_empty():
+            self._events_list.insert(0, self._processor.generate_event(self._model_time))
+            if not self._with_return:
+               self._queue.dequeue()
 
     def handle_event(self, ev, processed, rejected):
         print(repr(ev))
@@ -131,17 +129,16 @@ class Model(object):
         processed = 0
         rejected = 0
 
+        self._events_list.insert(0, self._generator.generate_event(self._model_time))
         while processed < to_process:
             while True:
                 try:
                     ev = self._events_list.pop()
                 except IndexError:
                     self._events_list.insert(0, self._generator.generate_event(self._model_time))
-                    self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
-                    break
-
                 if math.fabs(ev.get_planned_time() - self._model_time) < Model.eps: # process event
                     (processed, rejected) = self.handle_event(ev, processed, rejected)
+                    self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
                     if processed < to_process:
                         continue
                     else:
@@ -157,6 +154,23 @@ class Model(object):
             self._model_time = self._model_time + dt
         return self._model_time, rejected
 
-model = Model(27, 27, 27, 1, True)
-print(model.run_dt(0.001, 100))
+    def run_event(self, to_process):
+        self.reinit()
+        processed = 0
+        rejected = 0
+
+        self._events_list.insert(0, self._generator.generate_event(self._model_time))
+        self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
+        while processed < to_process:
+            ev = self._events_list.pop()
+            if ev.get_planned_time() == self._model_time: # process event
+                (processed, rejected) = self.handle_event(ev, processed, rejected)
+                self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
+            elif ev.get_planned_time() > self._model_time: # return to queue
+                self._model_time = ev.get_planned_time()
+                self._events_list.insert(0, ev)
+                self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
+            else:
+                assert 0
+        return self._model_time, rejected
 
