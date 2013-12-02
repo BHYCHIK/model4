@@ -73,9 +73,7 @@ class Processor(object):
         return ProcessingEvent(self.generate_time() + model_time)
 
 class Model(object):
-    eps = 0.0005
-
-    def __init__(self, gen_expected_value, process_expected_value, process_halfrange, queue_capacity, with_return=False):
+    def __init__(self, gen_expected_value, process_expected_value, process_halfrange, queue_capacity, eps, with_return=False):
         self._generator = Generator(gen_expected_value)
         self._processor = Processor(process_expected_value, process_halfrange)
         self._queue = DeviceQueue(queue_capacity)
@@ -83,22 +81,27 @@ class Model(object):
         self._model_time = 0
         self._with_return = with_return
         self._processing = False
+        self._eps = eps
+        self._logger = []
 
     def reinit(self):
         self._queue.clear()
         self._events_list = []
         self._model_time = 0
         self._processing = False
+        self._logger = []
 
     def handle_generation(self):
         self._events_list.insert(0, self._generator.generate_event(self._model_time))
         if self._queue.is_full():
+            self._logger.append("В %f заявка не попала в очередь из-за нехватки места" % self._model_time)
             return False
         if self._processing:
             self._queue.enqueue()
         else:
             self._events_list.insert(0, self._processor.generate_event(self._model_time))
             self._processing = True
+        self._logger.append("В %f произошло успешное генерирование заявки. В очереди занято %d/%d" % (self._model_time, self._queue._count, self._queue._capacity))
         return True
 
     def handle_processing(self):
@@ -110,6 +113,7 @@ class Model(object):
             self._events_list.insert(0, self._processor.generate_event(self._model_time))
             if not self._with_return:
                self._queue.dequeue()
+        self._logger.append("В %f произошла обработка заявки. В очереди занято %d/%d" % (self._model_time, self._queue._count, self._queue._capacity))
 
     def handle_event(self, ev, processed, rejected):
         print(repr(ev))
@@ -136,7 +140,7 @@ class Model(object):
                     ev = self._events_list.pop()
                 except IndexError:
                     self._events_list.insert(0, self._generator.generate_event(self._model_time))
-                if math.fabs(ev.get_planned_time() - self._model_time) < Model.eps: # process event
+                if math.fabs(ev.get_planned_time() - self._model_time) < self._eps: # process event
                     (processed, rejected) = self.handle_event(ev, processed, rejected)
                     self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
                     if processed < to_process:
@@ -152,7 +156,7 @@ class Model(object):
                     break
 
             self._model_time = self._model_time + dt
-        return self._model_time, rejected
+        return self._model_time, rejected, self._logger
 
     def run_event(self, to_process):
         self.reinit()
@@ -172,5 +176,5 @@ class Model(object):
                 self._events_list.sort(key=lambda x: x.get_planned_time(), reverse=True)
             else:
                 assert 0
-        return self._model_time, rejected
+        return self._model_time, rejected, self._logger
 
